@@ -28,6 +28,66 @@ from fortress.core.schema_pinner import SchemaPinner
 from fortress.audit.ledger import AuditLedger
 
 
+from collections import OrderedDict
+
+class TaintStore(OrderedDict):
+    """
+    LRU bounded dictionary with TTL expiration for stateful session taint tracking.
+    Guarantees O(1) lookups and bounded memory under long-running production workloads.
+    """
+    def __init__(self, max_size: int = 10000, ttl_seconds: float = 3600.0, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.max_size = max_size
+        self.ttl_seconds = ttl_seconds
+        self._timestamps: dict[str, float] = {}
+
+    def __getitem__(self, key: str) -> list[str]:
+        val = super().__getitem__(key)
+        now = time.time()
+        if now - self._timestamps.get(key, 0.0) > self.ttl_seconds:
+            self.__delitem__(key)
+            raise KeyError(key)
+        self.move_to_end(key)
+        return val
+
+    def get(self, key: str, default: Any = None) -> Any:
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+    def __contains__(self, key: object) -> bool:
+        if super().__contains__(key):
+            now = time.time()
+            if now - self._timestamps.get(str(key), 0.0) <= self.ttl_seconds:
+                return True
+            self.__delitem__(str(key))
+        return False
+
+    def __setitem__(self, key: str, value: list[str]):
+        if key in self:
+            self.move_to_end(key)
+        super().__setitem__(key, value)
+        self._timestamps[key] = time.time()
+        if len(self) > self.max_size:
+            oldest_key, _ = self.popitem(last=False)
+            self._timestamps.pop(oldest_key, None)
+
+    def __delitem__(self, key: str):
+        super().__delitem__(key)
+        self._timestamps.pop(key, None)
+
+    def items(self):
+        now = time.time()
+        expired = [k for k, ts in self._timestamps.items() if now - ts > self.ttl_seconds]
+        for k in expired:
+            try:
+                del self[k]
+            except KeyError:
+                pass
+        return super().items()
+
+
 class SecurityEngine:
     """
     Deterministic Inbound & Outbound Interception Engine.
@@ -49,7 +109,7 @@ class SecurityEngine:
         self.injection_detector = InjectionDetector(self.policy.outbound_guard)
         self.audit_ledger = AuditLedger(self.policy.audit_ledger)
         self.schema_pinner = SchemaPinner(self.policy)
-        self._tainted_sessions: dict[str, list[str]] = {}
+        self._tainted_sessions = TaintStore(max_size=10000, ttl_seconds=3600.0)
 
     def inspect_inbound(
         self,
@@ -224,6 +284,26 @@ class SecurityEngine:
             pending_token=pending_token,
         )
 
+    def _sanitize_string_leaf(self, s: str, violations: list[ViolationRecord]) -> str:
+        if self.policy.outbound_guard.scan_secrets:
+            s = self.secret_scanner._scan_text(s, violations)
+        if self.policy.outbound_guard.mask_pii:
+            s = self.pii_redactor._mask_text(s, violations)
+        if self.policy.outbound_guard.scan_prompt_injection:
+            s = self.injection_detector._scan_text(s, violations)
+        return s
+
+    def _sanitize_payload_single_pass(self, data: Any, violations: list[ViolationRecord], depth: int = 0) -> Any:
+        if depth > 20:
+            return data
+        if isinstance(data, str):
+            return self._sanitize_string_leaf(data, violations)
+        elif isinstance(data, dict):
+            return {k: self._sanitize_payload_single_pass(v, violations, depth + 1) for k, v in data.items()}
+        elif isinstance(data, (list, tuple)):
+            return [self._sanitize_payload_single_pass(item, violations, depth + 1) for item in data]
+        return data
+
     def inspect_outbound(
         self,
         response: JSONRPCResponse,
@@ -252,23 +332,15 @@ class SecurityEngine:
                 context.is_tainted = True
                 context.taint_sources = list(self._tainted_sessions[context.session_id])
 
-        # 1. Secret & Credential Scanner
-        current_data, secret_violations = self.secret_scanner.scan_and_redact(current_data)
-        if secret_violations:
-            violations.extend(secret_violations)
-            verdict = SecurityVerdict.REDACTED
+        # Single-Pass Unified Outbound Sanitization (Secrets + PII + Injections)
+        current_data = self._sanitize_payload_single_pass(current_data, violations)
 
-        # 2. PII Redaction Engine
-        current_data, pii_violations = self.pii_redactor.redact(current_data)
-        if pii_violations:
-            violations.extend(pii_violations)
-            verdict = SecurityVerdict.REDACTED
-
-        # 3. Indirect Prompt Injection Detector
-        current_data, injection_violations = self.injection_detector.inspect(current_data)
-        if injection_violations:
-            violations.extend(injection_violations)
-            if self.policy.outbound_guard.injection_action == "block":
+        if violations:
+            has_blocked_injection = any(
+                v.rule_name.startswith("prompt_injection_") and v.risk_level == RiskLevel.CRITICAL
+                for v in violations
+            )
+            if has_blocked_injection and self.policy.outbound_guard.injection_action == "block":
                 verdict = SecurityVerdict.BLOCK
                 current_data = {
                     "error": "Blocked by Fortress: Response contained dangerous indirect prompt injection."

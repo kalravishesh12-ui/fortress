@@ -31,6 +31,7 @@ class SecretScanner:
         "HUGGINGFACE_TOKEN": re.compile(r'\b(hf_[a-zA-Z0-9]{34,})\b'),
     }
     BASE64_PATTERN = re.compile(r'(?:[A-Za-z0-9+/]{4}){6,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=|[A-Za-z0-9+/]{4})')
+    ENTROPY_TOKEN_PATTERN = re.compile(r'\S{20,256}')
 
     STRIP_CHARS = " \'\",;:.()[]{}"
 
@@ -68,6 +69,9 @@ class SecretScanner:
         return data
 
     def _scan_text(self, text: str, violations: List[ViolationRecord]) -> str:
+        if not text or len(text) < 16:
+            return text
+
         current_text = text
 
         # 1. Deterministic Pattern Matching
@@ -110,8 +114,8 @@ class SecretScanner:
                 pass
 
         # 3. Shannon Entropy Scanner for unstructured high-entropy tokens
-        tokens = re.findall(r'\S{20,}', current_text)
-        for raw_tok in tokens:
+        for match in self.ENTROPY_TOKEN_PATTERN.finditer(current_text):
+            raw_tok = match.group(0)
             token = raw_tok.strip(self.STRIP_CHARS)
             if token.startswith("[REDACTED_") or len(token) < self.config.min_entropy_length:
                 continue

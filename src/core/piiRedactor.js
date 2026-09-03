@@ -7,13 +7,21 @@ class PIIRedactor {
     this.creditCardPattern = /\b(?:\d[ -]*?){13,19}\b/g;
   }
 
-  luhnCheck(cardDigits) {
-    const clean = cardDigits.replace(/\D/g, '');
-    if (clean.length < 13 || clean.length > 19) return false;
+  luhnCheck(candidate) {
+    let clean = '';
+    for (let i = 0; i < candidate.length; i++) {
+      const code = candidate.charCodeAt(i);
+      if (code >= 48 && code <= 57) clean += candidate[i];
+    }
+    const len = clean.length;
+    if (len < 13 || len > 19) return false;
+    const first = clean[0];
+    if (first !== '2' && first !== '3' && first !== '4' && first !== '5' && first !== '6') return false;
+
     let sum = 0;
     let shouldDouble = false;
-    for (let i = clean.length - 1; i >= 0; i--) {
-      let digit = parseInt(clean.charAt(i), 10);
+    for (let i = len - 1; i >= 0; i--) {
+      let digit = clean.charCodeAt(i) - 48;
       if (shouldDouble) {
         digit *= 2;
         if (digit > 9) digit -= 9;
@@ -50,8 +58,7 @@ class PIIRedactor {
 
     // 1. Credit Cards with Luhn validation
     current = current.replace(this.creditCardPattern, (match) => {
-      const digits = match.replace(/\D/g, '');
-      if (this.luhnCheck(digits)) {
+      if (this.luhnCheck(match)) {
         violations.push(new ViolationRecord(
           'pii_detected_credit_card',
           RiskLevel.HIGH,

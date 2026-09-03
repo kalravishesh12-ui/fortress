@@ -84,14 +84,20 @@ class SSRFGuard {
     return violations;
   }
 
-  _extractStrings(data) {
+  _extractStrings(data, maxDepth = 10, maxStrings = 1000) {
     const out = [];
-    if (typeof data === 'string') {
-      out.push(data);
-    } else if (Array.isArray(data)) {
-      for (const item of data) out.push(...this._extractStrings(item));
-    } else if (data && typeof data === 'object') {
-      for (const val of Object.values(data)) out.push(...this._extractStrings(val));
+    const stack = [[data, 0]];
+    while (stack.length > 0 && out.length < maxStrings) {
+      const [curr, depth] = stack.pop();
+      if (depth > maxDepth) continue;
+      if (typeof curr === 'string') {
+        out.push(curr);
+      } else if (Array.isArray(curr)) {
+        for (let i = 0; i < curr.length; i++) stack.push([curr[i], depth + 1]);
+      } else if (curr && typeof curr === 'object') {
+        const values = Object.values(curr);
+        for (let i = 0; i < values.length; i++) stack.push([values[i], depth + 1]);
+      }
     }
     return out;
   }

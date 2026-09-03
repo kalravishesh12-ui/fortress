@@ -21,17 +21,23 @@ class PIIRedactor:
         "credit_card": re.compile(r'\b(?:\d[ -]*?){13,19}\b'),
     }
 
+    VALID_CC_PREFIXES = ('2', '3', '4', '5', '6')
+
     def __init__(self, config: OutboundGuardConfig):
         self.config = config
 
     def luhn_check(self, card_num: str) -> bool:
-        digits = [int(d) for d in re.sub(r'\D', '', card_num)]
-        if len(digits) < 13 or len(digits) > 19:
+        # Fast character extraction without re.sub allocation
+        digits = [ord(c) - 48 for c in card_num if '0' <= c <= '9']
+        n = len(digits)
+        if n < 13 or n > 19:
+            return False
+        if str(digits[0]) not in self.VALID_CC_PREFIXES:
             return False
         checksum = 0
-        reverse_digits = digits[::-1]
-        for i, d in enumerate(reverse_digits):
-            if i % 2 == 1:
+        parity = n % 2
+        for i, d in enumerate(digits):
+            if i % 2 == parity:
                 doubled = d * 2
                 checksum += doubled - 9 if doubled > 9 else doubled
             else:
@@ -60,10 +66,12 @@ class PIIRedactor:
 
         # 1. Credit Card (check before phone/ssn to avoid partial collisions)
         if "credit_card" in self.config.pii_types:
-            for match in list(self.PII_PATTERNS["credit_card"].finditer(current_text)):
+            for match in self.PII_PATTERNS["credit_card"].finditer(current_text):
                 candidate = match.group(0)
-                clean_digits = re.sub(r'\D', '', candidate)
-                if self.luhn_check(clean_digits):
+                first_digit = next((c for c in candidate if '0' <= c <= '9'), None)
+                if first_digit not in self.VALID_CC_PREFIXES:
+                    continue
+                if self.luhn_check(candidate):
                     violations.append(
                         ViolationRecord(
                             rule_name="pii_detected_credit_card",

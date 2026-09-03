@@ -3,8 +3,8 @@
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-green.svg)](https://python.org)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-brightgreen.svg)](https://nodejs.org)
-[![Inbound Latency](https://img.shields.io/badge/Inbound_Latency-0.12ms-purple.svg)]()
-[![Outbound Latency](https://img.shields.io/badge/Outbound_Latency-0.13ms-purple.svg)]()
+[![Inbound Latency](https://img.shields.io/badge/Inbound_Latency-0.05ms-purple.svg)]()
+[![Outbound Latency](https://img.shields.io/badge/Outbound_Latency-0.06ms-purple.svg)]()
 [![Detection Rate](https://img.shields.io/badge/Attack_Detection-100%25-success.svg)]()
 [![Zero Dependencies](https://img.shields.io/badge/NPM_Dependencies-0-orange.svg)]()
 
@@ -18,10 +18,10 @@ Its singular mission: **Break the "Lethal Trifecta"** (unrestricted tool access,
 
 Tested across **10,000 requests** under 50-thread concurrent deluge:
 
-- **⚡ Microsecond Wire-Speed:** **`0.12 ms`** ($121\,\mu	ext{s}$) median inbound latency at **5,795 requests/second**.
+- **⚡ Microsecond Wire-Speed:** **`0.05 ms`** ($50\,\mu\text{s}$) median inbound latency at **11,332 requests/second**.
 - **🛡️ 100% Deterministic Detection:** Blocked **6,036 / 6,036** attack vectors ($0\%$ false negatives).
-- **🔐 Zero Secret & PII Leaks:** Scanned and redacted **8,533 sensitive responses** including Base64-encoded credentials.
-- **⛓️ Tamper-Proof Audit Ledger:** **8,445 writes/second** with $100\%$ cryptographic hash-chain continuity.
+- **🔐 Zero Secret & PII Leaks:** Scanned and redacted sensitive responses including Base64-encoded credentials with zero leaks.
+- **⛓️ Tamper-Proof Audit Ledger:** **14,009 writes/second** with $100\%$ cryptographic hash-chain continuity.
 - **📦 Zero Supply-Chain Bloat (Node.js Engine):** **`0` external NPM dependencies** (`dependencies: {}`). Runs purely on native Node.js built-ins (`node:crypto`, `node:net`, `node:dns`, `node:sqlite`).
 
 ---

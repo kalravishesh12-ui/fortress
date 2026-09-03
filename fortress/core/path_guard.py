@@ -39,16 +39,21 @@ class PathGuard:
 
         return violations
 
-    def _extract_strings(self, data: Any) -> List[str]:
+    def _extract_strings(self, data: Any, max_depth: int = 10, max_strings: int = 1000) -> List[str]:
         results: List[str] = []
-        if isinstance(data, str):
-            results.append(data)
-        elif isinstance(data, dict):
-            for v in data.values():
-                results.extend(self._extract_strings(v))
-        elif isinstance(data, list):
-            for item in data:
-                results.extend(self._extract_strings(item))
+        stack = [(data, 0)]
+        while stack and len(results) < max_strings:
+            curr, depth = stack.pop()
+            if depth > max_depth:
+                continue
+            if isinstance(curr, str):
+                results.append(curr)
+            elif isinstance(curr, dict):
+                for v in curr.values():
+                    stack.append((v, depth + 1))
+            elif isinstance(curr, (list, tuple)):
+                for item in curr:
+                    stack.append((item, depth + 1))
         return results
 
     def _check_string_for_path_risks(self, raw_str: str) -> Optional[ViolationRecord]:

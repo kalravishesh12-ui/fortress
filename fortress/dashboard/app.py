@@ -313,24 +313,28 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 simResult: null,
 
                 async init() {
+                    try {
+                        this.policyYaml = await fetch('/api/v1/policy/raw').then(r => r.text());
+                    } catch (e) {}
                     await this.fetchData();
-                this.fetchSchemaPins();
-                this.fetchTaintStatus();
-                    setInterval(() => this.fetchData(), 2500);
+                    this.fetchSchemaPins();
+                    this.fetchTaintStatus();
+                    // Poll dynamic metrics every 5s; pause when browser tab is inactive
+                    setInterval(() => {
+                        if (!document.hidden) this.fetchData();
+                    }, 5000);
                 },
 
                 async fetchData() {
                     try {
-                        const [statsRes, logsRes, hitlRes, policyRes] = await Promise.all([
+                        const [statsRes, logsRes, hitlRes] = await Promise.all([
                             fetch('/api/v1/stats').then(r => r.json()),
                             fetch('/api/v1/audit/logs?limit=30').then(r => r.json()),
                             fetch('/api/v1/hitl/pending').then(r => r.json()),
-                            fetch('/api/v1/policy/raw').then(r => r.text())
                         ]);
                         this.stats = statsRes;
                         this.logs = logsRes.logs || [];
                         this.pendingApprovals = hitlRes.pending || [];
-                        this.policyYaml = policyRes;
                     } catch (e) {}
                 },
 

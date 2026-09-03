@@ -24,6 +24,7 @@ class AuditLedger:
     def __init__(self, config: AuditLedgerConfig):
         self.config = config
         self._write_lock = threading.Lock()
+        self._last_entry_hash: Optional[str] = None
         self._init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
@@ -31,6 +32,8 @@ class AuditLedger:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA temp_store=MEMORY;")
+        conn.execute("PRAGMA cache_size=-16000;")
         return conn
 
     def _init_db(self) -> None:
@@ -54,6 +57,9 @@ class AuditLedger:
                     signature TEXT NOT NULL
                 );
             """)
+            cursor = conn.execute("SELECT entry_hash FROM audit_chain ORDER BY id DESC LIMIT 1")
+            row = cursor.fetchone()
+            self._last_entry_hash = row["entry_hash"] if row else self.GENESIS_HASH
             conn.commit()
 
     def _compute_payload_hash(self, payload: Any) -> str:
@@ -97,23 +103,26 @@ class AuditLedger:
         violations_json = json.dumps(violations_data)
 
         with self._write_lock:
+            if self._last_entry_hash is None:
+                with self._get_connection() as conn:
+                    cursor = conn.execute("SELECT entry_hash FROM audit_chain ORDER BY id DESC LIMIT 1")
+                    row = cursor.fetchone()
+                    self._last_entry_hash = row["entry_hash"] if row else self.GENESIS_HASH
+            prev_hash = self._last_entry_hash
+
+            entry_hash = self._compute_entry_hash(
+                prev_hash=prev_hash,
+                timestamp=now,
+                session_id=session_id,
+                user_id=user_id,
+                tool_name=tool_name,
+                direction=direction,
+                verdict=verdict.value,
+                payload_hash=payload_hash,
+            )
+            signature = self._sign_hash(entry_hash)
+
             with self._get_connection() as conn:
-                cursor = conn.execute("SELECT entry_hash FROM audit_chain ORDER BY id DESC LIMIT 1")
-                row = cursor.fetchone()
-                prev_hash = row["entry_hash"] if row else self.GENESIS_HASH
-
-                entry_hash = self._compute_entry_hash(
-                    prev_hash=prev_hash,
-                    timestamp=now,
-                    session_id=session_id,
-                    user_id=user_id,
-                    tool_name=tool_name,
-                    direction=direction,
-                    verdict=verdict.value,
-                    payload_hash=payload_hash,
-                )
-                signature = self._sign_hash(entry_hash)
-
                 cursor = conn.execute("""
                     INSERT INTO audit_chain (
                         timestamp, session_id, user_id, tool_name, direction,
@@ -125,6 +134,7 @@ class AuditLedger:
                 ))
                 entry_id = cursor.lastrowid
                 conn.commit()
+            self._last_entry_hash = entry_hash
 
         return {
             "id": entry_id,

@@ -4,6 +4,7 @@ Human-in-the-Loop (HITL) Hook & Approval Manager.
 
 from __future__ import annotations
 import asyncio
+import concurrent.futures
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -46,6 +47,9 @@ class HITLManager:
         self.config = config
         self._pending_approvals: Dict[str, PendingApproval] = {}
         self.console = Console()
+        self._terminal_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="hitl_term"
+        )
 
     def create_approval_request(
         self,
@@ -119,7 +123,7 @@ class HITLManager:
                 self.reject(pending.token, rejecter="terminal_user", reason="Terminal prompt interrupted")
 
         loop = asyncio.get_event_loop()
-        loop.run_in_executor(None, do_prompt)
+        loop.run_in_executor(self._terminal_executor, do_prompt)
 
     def list_pending(self) -> List[Dict[str, Any]]:
         return [

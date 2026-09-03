@@ -31,8 +31,17 @@ class AuditLedger {
         );
       `);
       this.hasSqlite = true;
+      const row = this.db.prepare('SELECT entry_hash FROM audit_chain ORDER BY id DESC LIMIT 1').get();
+      this.lastEntryHash = row ? row.entry_hash : this.genesisHash;
+      this.insertStmt = this.db.prepare(`
+        INSERT INTO audit_chain (
+          timestamp, session_id, user_id, tool_name, direction,
+          verdict, violations_json, payload_hash, prev_hash, entry_hash, signature
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
     } catch (e) {
       this.hasSqlite = false;
+      this.lastEntryHash = this.genesisHash;
     }
   }
 
@@ -50,26 +59,14 @@ class AuditLedger {
     const payloadHash = crypto.createHash('sha256').update(JSON.stringify(payload || {})).digest('hex');
     const violationsJson = JSON.stringify(violations || []);
 
-    let prevHash = this.genesisHash;
-    if (this.hasSqlite) {
-      const row = this.db.prepare('SELECT entry_hash FROM audit_chain ORDER BY id DESC LIMIT 1').get();
-      if (row) prevHash = row.entry_hash;
-    } else if (this.inMemoryChain.length > 0) {
-      prevHash = this.inMemoryChain[this.inMemoryChain.length - 1].entryHash;
-    }
-
+    const prevHash = this.lastEntryHash || this.genesisHash;
     const entryHash = this.computeEntryHash(prevHash, now, sessionId, userId, toolName, direction, verdict, payloadHash);
     const signature = this.signHash(entryHash);
 
     if (this.hasSqlite) {
-      const stmt = this.db.prepare(`
-        INSERT INTO audit_chain (
-          timestamp, session_id, user_id, tool_name, direction,
-          verdict, violations_json, payload_hash, prev_hash, entry_hash, signature
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-      stmt.run(now, sessionId, userId, toolName, direction, verdict, violationsJson, payloadHash, prevHash, entryHash, signature);
+      this.insertStmt.run(now, sessionId, userId, toolName, direction, verdict, violationsJson, payloadHash, prevHash, entryHash, signature);
     }
+    this.lastEntryHash = entryHash;
 
     const record = {
       timestamp: now,

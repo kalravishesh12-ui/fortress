@@ -7,6 +7,49 @@ const { InjectionDetector } = require('./injectionDetector');
 const { AuditLedger } = require('../audit/ledger');
 const { SecurityVerdict, InspectionResult, ViolationRecord, RiskLevel } = require('./models');
 
+class TaintStore {
+  constructor(maxSize = 10000, ttlMs = 3600000) {
+    this.maxSize = maxSize;
+    this.ttlMs = ttlMs;
+    this.map = new Map();
+  }
+
+  get(sessionId) {
+    const entry = this.map.get(sessionId);
+    if (!entry) return undefined;
+    if (Date.now() - entry.timestamp > this.ttlMs) {
+      this.map.delete(sessionId);
+      return undefined;
+    }
+    this.map.delete(sessionId);
+    this.map.set(sessionId, entry);
+    return entry.tools;
+  }
+
+  set(sessionId, tools) {
+    if (this.map.has(sessionId)) {
+      this.map.delete(sessionId);
+    } else if (this.map.size >= this.maxSize) {
+      const oldestKey = this.map.keys().next().value;
+      this.map.delete(oldestKey);
+    }
+    this.map.set(sessionId, { tools, timestamp: Date.now() });
+    return this;
+  }
+
+  has(sessionId) {
+    return this.get(sessionId) !== undefined;
+  }
+
+  delete(sessionId) {
+    return this.map.delete(sessionId);
+  }
+
+  get size() {
+    return this.map.size;
+  }
+}
+
 class FortressEngine {
   constructor(options = {}) {
     this.killSwitchActive = false;
@@ -17,7 +60,7 @@ class FortressEngine {
     this.piiRedactor = new PIIRedactor();
     this.injectionDetector = new InjectionDetector();
     this.auditLedger = new AuditLedger(options.auditDb, options.secretKey);
-    this.taintedSessions = new Map(); // sessionId -> [tools]
+    this.taintedSessions = new TaintStore(10000, 3600000);
   }
 
   inspectInbound(request, context) {
@@ -81,6 +124,29 @@ class FortressEngine {
     return new InspectionResult(verdict, violations, { latencyMs, ...extra });
   }
 
+  _sanitizeStringLeaf(s, violations) {
+    s = this.secretScanner._scanText(s, violations);
+    s = this.piiRedactor._scanText(s, violations);
+    s = this.injectionDetector._scanText(s, violations);
+    return s;
+  }
+
+  _sanitizePayloadSinglePass(data, violations, depth = 0) {
+    if (depth > 20) return data;
+    if (typeof data === 'string') {
+      return this._sanitizeStringLeaf(data, violations);
+    } else if (Array.isArray(data)) {
+      return data.map(item => this._sanitizePayloadSinglePass(item, violations, depth + 1));
+    } else if (data && typeof data === 'object') {
+      const out = {};
+      for (const [k, v] of Object.entries(data)) {
+        out[k] = this._sanitizePayloadSinglePass(v, violations, depth + 1);
+      }
+      return out;
+    }
+    return data;
+  }
+
   inspectOutbound(response, request, context) {
     const start = performance.now();
     const toolName = request?.params?.name || 'response';
@@ -104,27 +170,9 @@ class FortressEngine {
       context.taintSources = [...list];
     }
 
-    // 1. Secret scanning & base64 normalization
-    const secRes = this.secretScanner.scanAndRedact(current);
-    if (secRes.violations.length > 0) {
-      violations.push(...secRes.violations);
-      current = secRes.sanitized;
-      verdict = SecurityVerdict.REDACTED;
-    }
-
-    // 2. PII Redaction
-    const piiRes = this.piiRedactor.redact(current);
-    if (piiRes.violations.length > 0) {
-      violations.push(...piiRes.violations);
-      current = piiRes.sanitized;
-      verdict = SecurityVerdict.REDACTED;
-    }
-
-    // 3. Prompt Injection Detection
-    const injRes = this.injectionDetector.inspect(current);
-    if (injRes.violations.length > 0) {
-      violations.push(...injRes.violations);
-      current = injRes.sanitized;
+    // Single-pass unified outbound sanitization (Secrets + PII + Injections)
+    current = this._sanitizePayloadSinglePass(current, violations);
+    if (violations.length > 0) {
       verdict = SecurityVerdict.REDACTED;
     }
 

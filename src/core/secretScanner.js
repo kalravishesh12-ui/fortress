@@ -15,6 +15,7 @@ class SecretScanner {
       PRIVATE_KEY: /-----BEGIN (?:RSA|OPENSSH|EC|DSA|PGP)? PRIVATE KEY[^-]*-----/g,
     };
     this.base64Pattern = /(?:[A-Za-z0-9+/]{4}){6,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=|[A-Za-z0-9+/]{4})/g;
+    this.entropyTokenPattern = /\S{20,256}/g;
   }
 
   calculateShannonEntropy(str) {
@@ -54,6 +55,7 @@ class SecretScanner {
   }
 
   _scanText(text, violations) {
+    if (!text || text.length < 16) return text;
     let current = text;
 
     // 1. Regex pattern matching
@@ -95,7 +97,7 @@ class SecretScanner {
     }
 
     // 3. Shannon entropy detection
-    const tokens = current.match(/\S{20,}/g);
+    const tokens = current.match(this.entropyTokenPattern);
     if (tokens) {
       for (const tok of tokens) {
         if (tok.startsWith('[REDACTED_')) continue;

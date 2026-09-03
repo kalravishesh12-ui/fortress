@@ -78,6 +78,23 @@ class StdioProxy {
     serverRl.on('line', (line) => {
       const s = line.trim();
       if (!s) return;
+
+      // Early response size guard (default 10MB limit)
+      const maxBytes = this.engine.maxResponseSizeBytes || 10485760;
+      if (Buffer.byteLength(line, 'utf-8') > maxBytes) {
+        process.stderr.write(`\x1b[31m🚫 BLOCKED Outbound response: size exceeds limit of ${maxBytes} bytes\x1b[0m\n`);
+        const errResp = {
+          jsonrpc: '2.0',
+          id: null,
+          error: {
+            code: -32000,
+            message: `Blocked by Fortress: Response payload size exceeds limit (${maxBytes} bytes).`,
+          },
+        };
+        process.stdout.write(JSON.stringify(errResp) + '\n');
+        return;
+      }
+
       let resp;
       try {
         resp = JSON.parse(s);

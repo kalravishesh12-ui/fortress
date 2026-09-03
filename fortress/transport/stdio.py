@@ -136,6 +136,21 @@ class StdioProxy:
                     break
 
                 try:
+                    # Early response size pre-check before JSON decoding
+                    max_bytes = self.engine.policy.outbound_guard.max_response_size_bytes
+                    if len(line) > max_bytes:
+                        self.console.print(f"[bold red]🚫 BLOCKED Outbound response: size {len(line)} exceeds limit of {max_bytes} bytes[/bold red]")
+                        error_resp = {
+                            "jsonrpc": "2.0",
+                            "id": None,
+                            "error": {
+                                "code": -32000,
+                                "message": f"Blocked by Fortress: Response payload size ({len(line)} bytes) exceeds limit ({max_bytes} bytes).",
+                            },
+                        }
+                        self._write_client_stdout(error_resp)
+                        continue
+
                     raw_str = line.decode("utf-8").strip()
                     if not raw_str:
                         continue

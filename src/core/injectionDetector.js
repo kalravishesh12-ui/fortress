@@ -37,20 +37,24 @@ class InjectionDetector {
     return { sanitized, violations };
   }
 
+  _scanText(text, violations) {
+    let current = text;
+    for (const item of this.patterns) {
+      if (item.regex.test(current)) {
+        violations.push(new ViolationRecord(
+          `prompt_injection_${item.name}`,
+          item.risk,
+          `Indirect prompt injection or jailbreak trigger detected (${item.name}).`
+        ));
+        current = current.replace(item.regex, '[STRIPPED_SUSPICIOUS_INJECTION_DIRECTIVE]');
+      }
+    }
+    return current;
+  }
+
   _processData(data, violations) {
     if (typeof data === 'string') {
-      let current = data;
-      for (const item of this.patterns) {
-        if (item.regex.test(current)) {
-          violations.push(new ViolationRecord(
-            `prompt_injection_${item.name}`,
-            item.risk,
-            `Indirect prompt injection or jailbreak trigger detected (${item.name}).`
-          ));
-          current = current.replace(item.regex, '[STRIPPED_SUSPICIOUS_INJECTION_DIRECTIVE]');
-        }
-      }
-      return current;
+      return this._scanText(data, violations);
     } else if (Array.isArray(data)) {
       return data.map(item => this._processData(item, violations));
     } else if (data && typeof data === 'object') {
