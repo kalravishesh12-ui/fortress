@@ -42,7 +42,7 @@ class FortressEngine {
 
     // 3. Wedge 2: Stateful Taint-Tracking & Compound Tool Chaining Check
     const sessionTaints = this.taintedSessions.get(context.sessionId) || [];
-    const isEgressTool = /send_|post_|upload_|webhook_|email_|export_/i.test(toolName);
+    const isEgressTool = /egress|send_|post_|upload_|webhook_|email_|export_/i.test(toolName);
     if (sessionTaints.length > 0 && isEgressTool) {
       context.isTainted = true;
       context.taintSources = [...sessionTaints];
@@ -94,7 +94,7 @@ class FortressEngine {
     let verdict = SecurityVerdict.ALLOW;
 
     // Wedge 2: Record taint if tool matches sensitive read
-    if (/read_|query_|fetch_|get_|download_|cat_/i.test(toolName)) {
+    if (/ingest|read_|query_|fetch_|get_|download_|cat_/i.test(toolName)) {
       if (!this.taintedSessions.has(context.sessionId)) {
         this.taintedSessions.set(context.sessionId, []);
       }

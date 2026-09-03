@@ -1,2 +1,0 @@
-[console_scripts]
-mcp-shield = mcp_shield.cli:app
