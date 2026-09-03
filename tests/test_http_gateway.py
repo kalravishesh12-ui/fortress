@@ -9,7 +9,10 @@ from fortress.transport.http_sse import create_gateway_app
 
 @pytest.fixture
 def client(tmp_path):
-    app = create_gateway_app()
+    from fortress.config import load_policy
+    policy = load_policy()
+    policy.audit_ledger.db_path = str(tmp_path / "test_gateway_audit.db")
+    app = create_gateway_app(policy)
     return TestClient(app)
 
 

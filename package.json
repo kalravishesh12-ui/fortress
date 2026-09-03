@@ -1,0 +1,33 @@
+{
+  "name": "fortress-mcp",
+  "version": "1.0.0",
+  "description": "Enterprise MCP Security Gateway & Deterministic Agent Firewall in pure zero-dependency Node.js",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "bin": {
+    "fortress": "./bin/fortress.js",
+    "fortress-mcp": "./bin/fortress.js"
+  },
+  "scripts": {
+    "test": "node --test tests/node_tests/*.test.js",
+    "start": "node bin/fortress.js"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "security",
+    "firewall",
+    "agent",
+    "ssrf",
+    "prompt-injection",
+    "claude-desktop",
+    "cursor"
+  ],
+  "author": "Vishesh Kalra",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}
