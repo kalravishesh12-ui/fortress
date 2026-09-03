@@ -1,0 +1,298 @@
+"""
+Unified Dual-Stage Security Interception Engine.
+"""
+
+from __future__ import annotations
+import fnmatch
+import time
+from typing import Any, Optional
+from mcp_shield.config import MCPShieldPolicy
+from mcp_shield.core.circuit_breaker import CircuitBreaker
+from mcp_shield.core.hitl import HITLManager
+from mcp_shield.core.injection_detector import InjectionDetector
+from mcp_shield.core.models import (
+    InspectionResult,
+    JSONRPCRequest,
+    JSONRPCResponse,
+    RiskLevel,
+    SecurityContext,
+    SecurityVerdict,
+    ViolationRecord,
+)
+from mcp_shield.core.path_guard import PathGuard
+from mcp_shield.core.pii_redactor import PIIRedactor
+from mcp_shield.core.rbac import RBACValidator
+from mcp_shield.core.secret_scanner import SecretScanner
+from mcp_shield.core.ssrf_guard import SSRFGuard
+from mcp_shield.core.schema_pinner import SchemaPinner
+from mcp_shield.audit.ledger import AuditLedger
+
+
+class SecurityEngine:
+    """
+    Deterministic Inbound & Outbound Interception Engine.
+    """
+
+    def __init__(self, policy: Optional[MCPShieldPolicy] = None):
+        self.policy = policy or MCPShieldPolicy()
+        self.circuit_breaker = CircuitBreaker(
+            kill_switch_cfg=self.policy.kill_switch,
+            circuit_breaker_cfg=self.policy.circuit_breaker,
+            rate_limit_cfg=self.policy.rate_limiting,
+        )
+        self.rbac = RBACValidator(self.policy.rbac)
+        self.path_guard = PathGuard(self.policy.path_guard)
+        self.ssrf_guard = SSRFGuard(self.policy.ssrf_guard)
+        self.hitl = HITLManager(self.policy.hitl)
+        self.secret_scanner = SecretScanner(self.policy.outbound_guard)
+        self.pii_redactor = PIIRedactor(self.policy.outbound_guard)
+        self.injection_detector = InjectionDetector(self.policy.outbound_guard)
+        self.audit_ledger = AuditLedger(self.policy.audit_ledger)
+        self.schema_pinner = SchemaPinner(self.policy)
+        self._tainted_sessions: dict[str, list[str]] = {}
+
+    def inspect_inbound(
+        self,
+        request: JSONRPCRequest,
+        context: SecurityContext,
+        auth_token: Optional[str] = None
+    ) -> InspectionResult:
+        start_time = time.perf_counter()
+        violations: list[ViolationRecord] = []
+
+        if not request.is_tool_call:
+            if self.circuit_breaker.is_kill_switch_active():
+                v = ViolationRecord(
+                    rule_name="global_kill_switch",
+                    risk_level=RiskLevel.CRITICAL,
+                    reason="Global Kill Switch is active. All agent operations are frozen.",
+                )
+                self.audit_ledger.log_event(
+                    session_id=context.session_id,
+                    user_id=context.user_id,
+                    tool_name=request.method,
+                    direction="INBOUND",
+                    verdict=SecurityVerdict.BLOCK,
+                    violations=[v],
+                    payload=request.model_dump(),
+                )
+                return InspectionResult(
+                    verdict=SecurityVerdict.BLOCK,
+                    violations=[v],
+                    latency_ms=(time.perf_counter() - start_time) * 1000,
+                    blocked_reason=v.reason,
+                )
+            return InspectionResult(
+                verdict=SecurityVerdict.ALLOW,
+                latency_ms=(time.perf_counter() - start_time) * 1000,
+            )
+
+        tool_name = request.tool_name or "unknown_tool"
+        args = request.tool_arguments
+
+        # 1. Kill Switch & Circuit Breaker / Rate Limit Check
+        cb_violation = self.circuit_breaker.check_inbound(context.session_id)
+        if cb_violation:
+            violations.append(cb_violation)
+            return self._finalize_inbound_decision(
+                request, context, tool_name, SecurityVerdict.BLOCK, violations, start_time, cb_violation.reason
+            )
+
+        # 2. RBAC & Identity Check
+        context = self.rbac.resolve_identity(context, auth_token)
+        rbac_allowed, rbac_requires_hitl, rbac_violation = self.rbac.check_tool_access(tool_name, context.role)
+        if not rbac_allowed and rbac_violation:
+            violations.append(rbac_violation)
+            self.circuit_breaker.record_violation(context.session_id, rbac_violation)
+            return self._finalize_inbound_decision(
+                request, context, tool_name, SecurityVerdict.BLOCK, violations, start_time, rbac_violation.reason
+            )
+
+        # 3. Global Tool Policy Deny/Allow Check
+        for deny_pat in self.policy.tool_policies.deny_patterns:
+            if fnmatch.fnmatch(tool_name.lower(), deny_pat.lower()):
+                v = ViolationRecord(
+                    rule_name="tool_policy_denied",
+                    risk_level=RiskLevel.CRITICAL,
+                    reason=f"Tool '{tool_name}' matches global deny list rule '{deny_pat}'.",
+                    details={"tool": tool_name, "rule": deny_pat},
+                )
+                violations.append(v)
+                self.circuit_breaker.record_violation(context.session_id, v)
+                return self._finalize_inbound_decision(
+                    request, context, tool_name, SecurityVerdict.BLOCK, violations, start_time, v.reason
+                )
+
+        # 3.5. Stateful Taint-Tracking Check (Compound Tool Chaining Protection)
+        if self.policy.taint_tracking.enabled:
+            session_taints = self._tainted_sessions.get(context.session_id, [])
+            is_egress_tool = any(fnmatch.fnmatch(tool_name.lower(), pat.lower()) for pat in self.policy.taint_tracking.egress_patterns)
+            
+            if session_taints and is_egress_tool:
+                context.is_tainted = True
+                context.taint_sources = list(session_taints)
+                taint_violation = ViolationRecord(
+                    rule_name="compound_taint_egress_violation",
+                    risk_level=RiskLevel.CRITICAL,
+                    reason=f"Session is tainted by sensitive data ingested from {session_taints}; outbound egress tool '{tool_name}' requires human authorization.",
+                    details={"tool": tool_name, "taint_sources": session_taints},
+                )
+                violations.append(taint_violation)
+                if self.policy.taint_tracking.action_on_taint == "block":
+                    return self._finalize_inbound_decision(
+                        request, context, tool_name, SecurityVerdict.BLOCK, violations, start_time, taint_violation.reason
+                    )
+                else:
+                    pending = self.hitl.create_approval_request(request, context, taint_violation.reason)
+                    return self._finalize_inbound_decision(
+                        request, context, tool_name, SecurityVerdict.REQUIRE_APPROVAL, violations, start_time, pending_token=pending.token
+                    )
+
+        # 4. Argument & Path Traversal Guard
+        path_violations = self.path_guard.inspect_arguments(args)
+        if path_violations:
+            violations.extend(path_violations)
+            for v in path_violations:
+                self.circuit_breaker.record_violation(context.session_id, v)
+            return self._finalize_inbound_decision(
+                request, context, tool_name, SecurityVerdict.BLOCK, violations, start_time, path_violations[0].reason
+            )
+
+        # 5. Egress & SSRF Guard
+        ssrf_violations = self.ssrf_guard.inspect_arguments(args)
+        if ssrf_violations:
+            violations.extend(ssrf_violations)
+            for v in ssrf_violations:
+                self.circuit_breaker.record_violation(context.session_id, v)
+            return self._finalize_inbound_decision(
+                request, context, tool_name, SecurityVerdict.BLOCK, violations, start_time, ssrf_violations[0].reason
+            )
+
+        # 6. Human-in-the-Loop Check
+        needs_approval = rbac_requires_hitl
+        if not needs_approval:
+            for approval_pat in self.policy.tool_policies.require_approval:
+                if fnmatch.fnmatch(tool_name.lower(), approval_pat.lower()):
+                    needs_approval = True
+                    break
+
+        if needs_approval:
+            reason = f"Tool '{tool_name}' is classified as high-risk and requires human verification."
+            pending = self.hitl.create_approval_request(request, context, reason)
+            return self._finalize_inbound_decision(
+                request,
+                context,
+                tool_name,
+                SecurityVerdict.REQUIRE_APPROVAL,
+                violations,
+                start_time,
+                pending_token=pending.token,
+            )
+
+        # All inbound checks passed
+        self.circuit_breaker.record_call(context.session_id)
+        return self._finalize_inbound_decision(
+            request, context, tool_name, SecurityVerdict.ALLOW, violations, start_time
+        )
+
+    def _finalize_inbound_decision(
+        self,
+        request: JSONRPCRequest,
+        context: SecurityContext,
+        tool_name: str,
+        verdict: SecurityVerdict,
+        violations: list[ViolationRecord],
+        start_time: float,
+        blocked_reason: Optional[str] = None,
+        pending_token: Optional[str] = None,
+    ) -> InspectionResult:
+        latency = (time.perf_counter() - start_time) * 1000
+        self.audit_ledger.log_event(
+            session_id=context.session_id,
+            user_id=context.user_id,
+            tool_name=tool_name,
+            direction="INBOUND",
+            verdict=verdict,
+            violations=violations,
+            payload=request.model_dump(),
+        )
+        return InspectionResult(
+            verdict=verdict,
+            violations=violations,
+            latency_ms=latency,
+            blocked_reason=blocked_reason,
+            pending_token=pending_token,
+        )
+
+    def inspect_outbound(
+        self,
+        response: JSONRPCResponse,
+        request: Optional[JSONRPCRequest],
+        context: SecurityContext,
+    ) -> InspectionResult:
+        start_time = time.perf_counter()
+        tool_name = request.tool_name if (request and request.is_tool_call) else "response"
+        violations: list[ViolationRecord] = []
+
+        if response.is_error or response.result is None:
+            latency = (time.perf_counter() - start_time) * 1000
+            return InspectionResult(verdict=SecurityVerdict.ALLOW, latency_ms=latency)
+
+        current_data = response.result
+        verdict = SecurityVerdict.ALLOW
+
+        # Record taint if tool matches sensitive read
+        if self.policy.taint_tracking.enabled and tool_name:
+            is_sensitive_read = any(fnmatch.fnmatch(tool_name.lower(), pat.lower()) for pat in self.policy.taint_tracking.sensitive_read_patterns)
+            if is_sensitive_read:
+                if context.session_id not in self._tainted_sessions:
+                    self._tainted_sessions[context.session_id] = []
+                if tool_name not in self._tainted_sessions[context.session_id]:
+                    self._tainted_sessions[context.session_id].append(tool_name)
+                context.is_tainted = True
+                context.taint_sources = list(self._tainted_sessions[context.session_id])
+
+        # 1. Secret & Credential Scanner
+        current_data, secret_violations = self.secret_scanner.scan_and_redact(current_data)
+        if secret_violations:
+            violations.extend(secret_violations)
+            verdict = SecurityVerdict.REDACTED
+
+        # 2. PII Redaction Engine
+        current_data, pii_violations = self.pii_redactor.redact(current_data)
+        if pii_violations:
+            violations.extend(pii_violations)
+            verdict = SecurityVerdict.REDACTED
+
+        # 3. Indirect Prompt Injection Detector
+        current_data, injection_violations = self.injection_detector.inspect(current_data)
+        if injection_violations:
+            violations.extend(injection_violations)
+            if self.policy.outbound_guard.injection_action == "block":
+                verdict = SecurityVerdict.BLOCK
+                current_data = {
+                    "error": "Blocked by MCP-Shield: Response contained dangerous indirect prompt injection."
+                }
+            else:
+                verdict = SecurityVerdict.REDACTED
+
+        modified_response = response.model_copy(deep=True)
+        modified_response.result = current_data
+
+        latency = (time.perf_counter() - start_time) * 1000
+        self.audit_ledger.log_event(
+            session_id=context.session_id,
+            user_id=context.user_id,
+            tool_name=tool_name,
+            direction="OUTBOUND",
+            verdict=verdict,
+            violations=violations,
+            payload=modified_response.model_dump(),
+        )
+
+        return InspectionResult(
+            verdict=verdict,
+            modified_payload=modified_response.model_dump(),
+            violations=violations,
+            latency_ms=latency,
+        )
