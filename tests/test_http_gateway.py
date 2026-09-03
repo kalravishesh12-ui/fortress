@@ -4,7 +4,7 @@ Integration Tests for HTTP + SSE Gateway and Admin APIs.
 
 import pytest
 from fastapi.testclient import TestClient
-from mcp_shield.transport.http_sse import create_gateway_app
+from fortress.transport.http_sse import create_gateway_app
 
 
 @pytest.fixture
@@ -16,7 +16,7 @@ def client(tmp_path):
 def test_dashboard_index_rendered(client):
     res = client.get("/")
     assert res.status_code == 200
-    assert "MCP-SHIELD" in res.text
+    assert "FORTRESS" in res.text
     assert "Deterministic Agent Firewall" in res.text
 
 

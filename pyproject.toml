@@ -3,12 +3,10 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mcp-shield"
+name = "fortress"
 version = "1.0.0"
-description = "Enterprise MCP Security Gateway & Deterministic Agent Firewall"
+description = "Fortress: Enterprise MCP Security Gateway & Deterministic Agent Firewall"
 readme = "README.md"
-authors = [{ name = "Google DeepMind Advanced Agentic Coding Team" }]
-license = { text = "Apache-2.0" }
 requires-python = ">=3.10"
 dependencies = [
     "pydantic>=2.0.0",
@@ -18,12 +16,12 @@ dependencies = [
     "rich>=13.0.0",
     "typer>=0.9.0",
     "httpx>=0.24.0",
-    "sse-starlette>=1.6.0"
+    "sse-starlette>=1.6.0",
 ]
 
 [project.scripts]
-mcp-shield = "mcp_shield.cli:app"
+fortress = "fortress.cli:app"
+mcp-shield = "fortress.cli:app"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-asyncio_mode = "auto"

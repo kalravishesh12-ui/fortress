@@ -1,0 +1,3 @@
+[console_scripts]
+fortress = fortress.cli:app
+mcp-shield = fortress.cli:app

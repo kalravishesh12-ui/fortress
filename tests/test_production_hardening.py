@@ -10,16 +10,16 @@ Unit & Integration Tests for Production Hardening Additions:
 import base64
 import pytest
 from fastapi.testclient import TestClient
-from mcp_shield.config import load_policy
-from mcp_shield.core.engine import SecurityEngine
-from mcp_shield.core.models import JSONRPCRequest, JSONRPCResponse, SecurityContext, SecurityVerdict
-from mcp_shield.core.schema_pinner import SchemaPinner
-from mcp_shield.transport.http_sse import create_gateway_app
+from fortress.config import load_policy
+from fortress.core.engine import SecurityEngine
+from fortress.core.models import JSONRPCRequest, JSONRPCResponse, SecurityContext, SecurityVerdict
+from fortress.core.schema_pinner import SchemaPinner
+from fortress.transport.http_sse import create_gateway_app
 
 
 @pytest.fixture
 def engine():
-    policy = load_policy("mcp-policy.yaml")
+    policy = load_policy("fortress-policy.yaml")
     return SecurityEngine(policy)
 
 
@@ -136,7 +136,7 @@ def test_cef_and_syslog_export(engine):
 
     syslog = engine.audit_ledger.export_syslog(entry)
     assert syslog.startswith("<134>1 ")
-    assert "mcp-shield-gateway" in syslog
+    assert "fortress-gateway" in syslog
 
 
 def test_host_and_origin_rebinding_middleware(engine):

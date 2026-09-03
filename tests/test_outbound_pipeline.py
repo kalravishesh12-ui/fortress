@@ -3,14 +3,14 @@ Unit & Integration Tests for Outbound Inspection Pipeline (Secrets, PII, Injecti
 """
 
 import pytest
-from mcp_shield.config import load_policy
-from mcp_shield.core.engine import SecurityEngine
-from mcp_shield.core.models import JSONRPCRequest, JSONRPCResponse, SecurityContext, SecurityVerdict
+from fortress.config import load_policy
+from fortress.core.engine import SecurityEngine
+from fortress.core.models import JSONRPCRequest, JSONRPCResponse, SecurityContext, SecurityVerdict
 
 
 @pytest.fixture
 def engine():
-    policy = load_policy("mcp-policy.yaml")
+    policy = load_policy("fortress-policy.yaml")
     return SecurityEngine(policy)
 
 

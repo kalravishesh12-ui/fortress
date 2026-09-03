@@ -5,9 +5,9 @@ Unit Tests for Cryptographic Tamper-Evident Hash Chain Audit Ledger.
 import os
 import sqlite3
 import pytest
-from mcp_shield.audit.ledger import AuditLedger
-from mcp_shield.config import AuditLedgerConfig
-from mcp_shield.core.models import SecurityVerdict, ViolationRecord, RiskLevel
+from fortress.audit.ledger import AuditLedger
+from fortress.config import AuditLedgerConfig
+from fortress.core.models import SecurityVerdict, ViolationRecord, RiskLevel
 
 
 @pytest.fixture
