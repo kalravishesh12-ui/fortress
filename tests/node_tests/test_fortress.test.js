@@ -43,7 +43,7 @@ test('Wedge 1: Schema Pinner blocks injected prompt in description', () => {
 });
 
 test('Wedge 2: Stateful Taint-Tracking blocks compound exfiltration chaining', () => {
-  const engine = new FortressEngine();
+  const engine = new FortressEngine({ auditDb: ':memory:' });
   const ctx = new SecurityContext();
 
   // Step 1: Read sensitive internal data
