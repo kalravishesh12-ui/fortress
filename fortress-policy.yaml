@@ -1,0 +1,219 @@
+# Fortress Enterprise Security Policy
+version: "1.0"
+
+kill_switch:
+  enabled: false
+
+circuit_breaker:
+  enabled: true
+  max_violations_per_session: 5
+  cooldown_seconds: 60
+
+rate_limiting:
+  enabled: true
+  calls_per_minute: 60
+  burst_size: 15
+  max_session_cost_usd: 10.0
+  cost_per_tool_call: 0.002
+
+global_rate_limit:
+  enabled: true
+  global_requests_per_second: 500
+  global_burst_allowance: 100
+  threat_backoff_base: 2.0
+  max_threat_backoff_seconds: 300.0
+
+rbac:
+  enabled: true
+  default_role: "readonly"
+  roles:
+    admin:
+      allowed_tools: ["*"]
+      denied_tools: []
+      require_approval: []
+    developer:
+      allowed_tools:
+        - "read_*"
+        - "get_*"
+        - "list_*"
+        - "search_*"
+        - "fetch_*"
+        - "query_*"
+        - "write_*"
+        - "create_*"
+        - "execute_*"
+      denied_tools:
+        - "*shell_exec*"
+        - "*eval*"
+        - "*system_cmd*"
+        - "delete_database"
+        - "drop_*"
+      require_approval:
+        - "write_*"
+        - "create_*"
+        - "execute_*"
+    readonly:
+      allowed_tools:
+        - "read_*"
+        - "get_*"
+        - "list_*"
+        - "search_*"
+        - "fetch_*"
+      denied_tools:
+        - "write_*"
+        - "create_*"
+        - "execute_*"
+        - "delete_*"
+        - "update_*"
+        - "drop_*"
+        - "*shell_exec*"
+      require_approval: []
+    agent:
+      allowed_tools:
+        - "read_*"
+        - "get_*"
+        - "list_*"
+        - "search_*"
+        - "fetch_*"
+        - "execute_task"
+      denied_tools:
+        - "*shell_exec*"
+        - "*eval*"
+        - "*system_cmd*"
+        - "delete_*"
+        - "drop_*"
+        - "transfer_funds"
+      require_approval:
+        - "execute_task"
+  user_roles:
+    admin_user: "admin"
+    dev_agent: "developer"
+    readonly_bot: "readonly"
+  api_tokens:
+    mcp_sec_admin_token_99x: "admin"
+    mcp_sec_dev_token_42a: "developer"
+    mcp_sec_agent_token_07z: "agent"
+
+tool_policies:
+  allow_patterns:
+    - "read_*"
+    - "get_*"
+    - "list_*"
+    - "search_*"
+    - "fetch_*"
+    - "query_*"
+    - "browse_*"
+  deny_patterns:
+    - "*shell_exec*"
+    - "*eval*"
+    - "*system_cmd*"
+    - "*raw_exec*"
+    - "delete_database"
+    - "drop_*"
+    - "destroy_*"
+    - "rm_*"
+  require_approval:
+    - "execute_query"
+    - "update_*"
+    - "delete_*"
+    - "write_*"
+    - "send_email"
+    - "transfer_*"
+    - "deploy_*"
+
+path_guard:
+  enabled: true
+  allowed_base_directories:
+    - "."
+  blocked_paths:
+    - ".ssh"
+    - "id_rsa"
+    - "id_ed25519"
+    - "/etc/passwd"
+    - "/etc/shadow"
+    - "/etc/sudoers"
+    - "C:\\Windows\\System32\\config"
+    - ".aws/credentials"
+    - ".env"
+    - ".git/config"
+    - "authorized_keys"
+  block_traversal_patterns:
+    - ".."
+    - "%2e%2e"
+    - "%252e%252e"
+    - "..\\"
+    - "../"
+    - "%00"
+
+ssrf_guard:
+  enabled: true
+  blocked_ip_ranges:
+    - "169.254.169.254/32"
+    - "169.254.0.0/16"
+    - "127.0.0.0/8"
+    - "10.0.0.0/8"
+    - "172.16.0.0/12"
+    - "192.168.0.0/16"
+    - "0.0.0.0/8"
+    - "::1/128"
+    - "fc00::/7"
+    - "fe80::/10"
+  blocked_domains:
+    - "metadata.google.internal"
+    - "instance-data"
+    - "metadata.azure.com"
+    - "169.254.169.254.nip.io"
+    - "localhost"
+    - "127.0.0.1.nip.io"
+  allowed_domains: []
+
+outbound_guard:
+  scan_secrets: true
+  entropy_threshold: 4.5
+  min_entropy_length: 20
+  mask_pii: true
+  pii_types:
+    - "ssn"
+    - "credit_card"
+    - "email"
+    - "phone"
+  scan_prompt_injection: true
+  injection_action: "sanitize"
+  max_response_size_bytes: 10485760
+
+audit_ledger:
+  enabled: true
+  db_path: "./fortress-audit.db"
+  hmac_secret_key: "mcp_shield_deterministic_enterprise_hmac_secret_2026"
+  log_to_console: false
+
+hitl:
+  mode: "terminal"
+  webhook_url: null
+  timeout_seconds: 60
+
+# --- The 3 Enterprise Security Wedges ---
+schema_pinning:
+  enabled: true
+  auto_pin_on_first_seen: true
+  block_on_mutation: true
+
+taint_tracking:
+  enabled: true
+  sensitive_read_patterns:
+    - "read_*"
+    - "get_*"
+    - "query_*"
+    - "fetch_*"
+    - "search_*"
+    - "cat_*"
+    - "download_*"
+  egress_patterns:
+    - "send_*"
+    - "post_*"
+    - "upload_*"
+    - "email_*"
+    - "webhook_*"
+    - "transfer_*"
+    - "export_*"
+  action_on_taint: "require_approval"

@@ -1,0 +1,132 @@
+const fs = require('node:fs');
+const path = require('node:path');
+const { RiskLevel, ViolationRecord } = require('./models');
+
+class PathGuard {
+  constructor(options = {}) {
+    this.allowedBases = (options.allowedBases || ['.']).map(p => path.resolve(p));
+    this.blockedPaths = [
+      '.ssh', 'id_rsa', 'id_ed25519', '/etc/passwd', '/etc/shadow',
+      '/etc/sudoers', 'SAM', '.aws/credentials', '.env', '.git/config'
+    ];
+    this.windowsReserved = new Set([
+      'CON', 'PRN', 'AUX', 'NUL',
+      'COM0', 'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9',
+      'LPT0', 'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9'
+    ]);
+  }
+
+  inspectArguments(args) {
+    const strings = this._extractStrings(args);
+    const violations = [];
+    for (const s of strings) {
+      const v = this._checkString(s);
+      if (v) violations.push(v);
+    }
+    return violations;
+  }
+
+  _extractStrings(data, maxDepth = 10, maxStrings = 1000) {
+    const out = [];
+    const stack = [[data, 0]];
+    while (stack.length > 0 && out.length < maxStrings) {
+      const [curr, depth] = stack.pop();
+      if (depth > maxDepth) continue;
+      if (typeof curr === 'string') {
+        out.push(curr);
+      } else if (Array.isArray(curr)) {
+        for (let i = 0; i < curr.length; i++) stack.push([curr[i], depth + 1]);
+      } else if (curr && typeof curr === 'object') {
+        const values = Object.values(curr);
+        for (let i = 0; i < values.length; i++) stack.push([values[i], depth + 1]);
+      }
+    }
+    return out;
+  }
+
+  _checkString(raw) {
+    const s = raw.trim();
+    if (/^(?:https?|ftp|ws|wss):\/\//i.test(s)) return null;
+
+    let decoded = s;
+    try { decoded = decodeURIComponent(s); } catch { /* Malformed URI sequence, keep raw */ }
+    let doubleDecoded = decoded;
+    try { doubleDecoded = decodeURIComponent(decoded); } catch { /* Malformed secondary URI sequence */ }
+
+    // 1. Null-byte injection
+    if (s.includes('\x00') || decoded.includes('\x00') || /%00/i.test(s)) {
+      return new ViolationRecord('path_null_byte_injection', RiskLevel.CRITICAL, 'Null byte injection detected in path argument.');
+    }
+
+    // 2. Traversal sequences
+    if (s.includes('..') || decoded.includes('..') || doubleDecoded.includes('..') || /%2e%2e/i.test(s)) {
+      return new ViolationRecord('path_traversal_detected', RiskLevel.CRITICAL, "Path traversal sequence '..' detected in tool argument.");
+    }
+
+    // 3. Windows DOS reserved device names (handling prefixes, extensions, ADS, and trailing dots)
+    let cleanPath = s;
+    if (cleanPath.startsWith('\\\\?\\') || cleanPath.startsWith('\\\\.\\') || cleanPath.startsWith('//?/') || cleanPath.startsWith('//./')) {
+      cleanPath = cleanPath.slice(4);
+    }
+    const normForDevice = cleanPath.replace(/\\/g, '/');
+    const rawBasename = path.basename(normForDevice);
+    const adsStripped = rawBasename.split(':')[0];
+    const deviceCandidate = adsStripped.replace(/[\s.]+$/, '').toUpperCase();
+    const prefixBeforeExt = deviceCandidate.split('.')[0].trim();
+
+    let isReserved = false;
+    let reservedMatch = null;
+    if (this.windowsReserved.has(deviceCandidate)) {
+      isReserved = true;
+      reservedMatch = deviceCandidate;
+    } else if (this.windowsReserved.has(prefixBeforeExt)) {
+      isReserved = true;
+      reservedMatch = prefixBeforeExt;
+    } else if (/^(?:COM|LPT)[0-9]$/.test(deviceCandidate)) {
+      isReserved = true;
+      reservedMatch = deviceCandidate;
+    } else if (/^(?:COM|LPT)[0-9]$/.test(prefixBeforeExt)) {
+      isReserved = true;
+      reservedMatch = prefixBeforeExt;
+    }
+
+    if (isReserved) {
+      return new ViolationRecord('path_reserved_device_blocked', RiskLevel.CRITICAL, `Target path references Windows reserved system device '${reservedMatch}'.`);
+    }
+
+    // 4. NTFS Alternate Data Streams
+    const normalized = cleanPath.replace(/\\/g, '/');
+    const withoutDrive = normalized.replace(/^[a-zA-Z]:/, '');
+    if (withoutDrive.includes(':')) {
+      return new ViolationRecord('path_alternate_data_stream_blocked', RiskLevel.CRITICAL, 'NTFS Alternate Data Stream access detected.');
+    }
+
+    // 5. Sensitive system targets
+    const normLower = normalized.toLowerCase();
+    for (const b of this.blockedPaths) {
+      if (normLower.includes(b.toLowerCase())) {
+        return new ViolationRecord('path_sensitive_target_blocked', RiskLevel.CRITICAL, `Access to sensitive target '${b}' is forbidden.`);
+      }
+    }
+
+    // 6. Symlink canonicalization
+    try {
+      if (fs.existsSync(s)) {
+        const real = fs.realpathSync(s).replace(/\\/g, '/').toLowerCase();
+        for (const b of this.blockedPaths) {
+          if (real.includes(b.toLowerCase())) {
+            return new ViolationRecord('path_symlink_escape_blocked', RiskLevel.CRITICAL, `Path resolves via symlink to forbidden target '${real}'.`);
+          }
+        }
+      }
+    } catch (err) {
+      if (process.env.FORTRESS_DEBUG) {
+        console.error(`[Fortress:PathGuard] Symlink resolution skipped: ${err?.message || err}`);
+      }
+    }
+
+    return null;
+  }
+}
+
+module.exports = { PathGuard };
